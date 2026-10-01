@@ -1,0 +1,162 @@
+# OTTO Affiliate MCP-Server
+
+Dieser MCP-Server (Model Context Protocol) liefert **Umsatz- und Provisionsdaten aus dem OTTO-Partnerprogramm**
+an KI-Assistenten wie Claude. Er ist für Publisher gedacht, die in Artikeln auf otto.de verlinken.
+Der Server läuft auf **Google Cloud Run**.
+
+## Ergebnis der Recherche: Welche „OTTO-API“?
+
+OTTO hat zwei verschiedene APIs. Nur eine davon ist für Publisher relevant:
+
+| API | Zweck | Für uns relevant? |
+|---|---|---|
+| **OTTO Market API** (`api.otto.market`) | Für Händler (Seller) auf dem OTTO-Marktplatz: Produkte, Bestellungen, Retouren | ❌ Nein |
+| **OTTO Partnerprogramm** (`partnerprogramm.otto.de`) | Affiliate-Programm für Publisher; läuft als „Private Network“ auf **easy.AFFILIATE** von easy.marketing | ✅ Ja |
+
+Die Daten des Partnerprogramms kommen über die **Publisher-API von easy.AFFILIATE**:
+
+```
+https://partnerprogramm.otto.de/api/<ACCESS-TOKEN>/publisher/<PUBLISHER-ID>/<METHODE>.<FORMAT>
+```
+
+- **Zugangsdaten:** Im Publisher-Account unter *Statistiken → API* (`/statistic-api.do`) stehen der
+  Access-Token und die Publisher-ID.
+- **Formate:** `csv`, `json`, `xml`, `xls`. Der Server nutzt standardmäßig `csv`.
+- **Methoden, die der Server nutzt:**
+  - `get-statistic_transactions`: einzelne Transaktionen mit Bestellnummer (`ordertoken`), Zeitpunkt, Status, Umsatz und Provision
+  - `get-statistic_daily`: Tagesstatistik (Views, Klicks, Transaktionen, Provision)
+  - `get-statistic_advertiser`: Statistik je Advertiser
+  - `get-campaigns_admedialist`: Werbemittel
+- **Filter (Query-Parameter):**
+  - `condition[period][from]` und `condition[period][to]` im Format `TT.MM.JJJJ`
+  - `condition[timetype]`: `0` = Erstellung, `1` = Bearbeitung, `2` = Auszahlung
+  - `condition[l:processingstate]`: `open`, `confirmed`, `paid`, `canceled` (mehrere kommagetrennt)
+  - `condition[dynamicdate]`: z. B. `currentmonth`, `lastmonth`
+
+Quellen: [easy.MARKETING Support – Transaktions-API](https://support.easy-m.de/support/solutions/articles/48001171736-transaktions-api),
+[Statistik-API](https://support.easy-m.de/support/solutions/articles/48001157529-statistik-api),
+[Publisher-API](https://support.easy-m.de/support/solutions/articles/48001173685-publisher-api),
+[OTTO Partnerprogramm](https://www.otto.de/partnerprogramm/en/).
+
+> **Wichtig vor dem ersten Einsatz:** URL-Schema und Filter stammen aus der Doku von easy.marketing.
+> Die genauen **Spaltennamen** der Antworten konnten wir ohne echten Zugang nicht prüfen.
+> Der Server erkennt die Spalten automatisch und kennt dafür deutsche und englische Varianten
+> (z. B. `turnover`/`Umsatz`, `commission`/`Provision`, `processingstate`/`Status`).
+> Bitte nach dem Deployment einmal `get_transactions` aufrufen und `detected_fields` prüfen.
+> Wird eine Spalte nicht erkannt, kann man sie über `OTTO_FIELD_*` festlegen (siehe `.env.example`).
+
+## Tools des MCP-Servers
+
+Alle Tools lesen nur. Datumsangaben im Format `YYYY-MM-DD`; ohne Angabe gilt der laufende Monat.
+
+| Tool | Beschreibung |
+|---|---|
+| `get_revenue_summary` | Umsatz, Provision und Anzahl Transaktionen, gesamt und gruppiert nach `status`, `day`, `week`, `month`, `year` oder `admedia`. Zeigt auch die **gesicherte** Provision (confirmed + paid) und die **offene** Provision. |
+| `get_transactions` | Einzelne Transaktionen mit Paginierung (`limit`/`offset`). Filter: Status, Werbemittel, Bezugsdatum. |
+| `get_daily_statistics` | Tagesstatistik (Views, Klicks, Sales). Optional ein relativer Zeitraum wie `lastmonth`. |
+| `get_advertiser_statistics` | Statistik je Advertiser/Programm |
+| `list_admedia` | Werbemittel samt IDs |
+| `query_publisher_api` | Direkter Lesezugriff auf weitere Methoden der Publisher-API, für Sonderfälle |
+
+Beispielfragen an Claude:
+- „Wie viel Provision haben wir im September mit OTTO verdient, und wie viel davon ist schon bestätigt?“
+- „Zeig mir den OTTO-Umsatz der letzten 6 Monate pro Monat.“
+- „Welche Bestellungen sind diese Woche storniert worden?“
+
+## Lokal starten
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env   # Werte eintragen
+set -a && source .env && set +a
+
+# HTTP (wie auf Cloud Run): http://localhost:8080/mcp
+otto-affiliate-mcp
+
+# oder stdio (z. B. für Claude Desktop direkt)
+otto-affiliate-mcp --transport stdio
+
+pytest   # Tests
+```
+
+## Deployment auf Google Cloud Run
+
+Das Skript übernimmt alles: APIs aktivieren, Artifact Registry, Service Account, Secrets im
+Secret Manager, Build über Cloud Build und Deploy nach Cloud Run (Region `europe-west3`, Frankfurt).
+
+```bash
+PROJECT_ID=mein-gcp-projekt ./deploy/deploy.sh
+```
+
+Beim ersten Lauf fragt das Skript nach dem OTTO-Access-Token und der Publisher-ID. Das
+`MCP_AUTH_TOKEN` erzeugt es selbst und gibt es einmal aus. Spätere Deployments (z. B. aus CI)
+gehen auch so:
+
+```bash
+gcloud builds submit --config cloudbuild.yaml
+```
+
+Aufbau auf Google Cloud:
+
+```
+Claude / MCP-Client ──HTTPS + Bearer-Token──▶ Cloud Run (/mcp, stateless)
+                                                   │  Secrets aus Secret Manager
+                                                   ▼
+                              partnerprogramm.otto.de/api/<token>/publisher/<id>/…
+```
+
+- **Stateless Streamable HTTP:** Cloud Run kann beliebig skalieren und braucht keine Session-Affinität.
+- **Secrets:** Access-Token, Publisher-ID und MCP-Token liegen nur im Secret Manager, nicht im Image.
+- **Logging:** Der Access-Token steht in der Upstream-URL. Darum loggt der Server keine Request-URLs
+  von httpx, und Fehlermeldungen werden geschwärzt.
+- **Cache:** API-Antworten werden 5 Minuten im Speicher gehalten (`OTTO_CACHE_TTL`).
+- **Health-Check:** `GET /healthz`
+
+### Zugriffsschutz
+
+- **Standard (`ACCESS_MODE=public`):** Der Endpunkt ist öffentlich erreichbar, aber jeder Request
+  braucht `Authorization: Bearer <MCP_AUTH_TOKEN>` oder `X-API-Key: <MCP_AUTH_TOKEN>`.
+- **`ACCESS_MODE=iam`:** Zusätzlich prüft Cloud-Run-IAM den Zugriff (`roles/run.invoker`). Der Client
+  schickt dann das Google-ID-Token im `Authorization`-Header und das MCP-Token als `X-API-Key`.
+
+## MCP-Client anbinden
+
+**Claude Code:**
+
+```bash
+claude mcp add --transport http otto-affiliate https://<cloud-run-url>/mcp \
+  --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+```
+
+**Claude Desktop** (über `mcp-remote`) in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "otto-affiliate": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://<cloud-run-url>/mcp", "--header", "Authorization: Bearer ${MCP_TOKEN}"],
+      "env": { "MCP_TOKEN": "<MCP_AUTH_TOKEN>" }
+    }
+  }
+}
+```
+
+> Hinweis: Custom Connectors in der Web-Oberfläche von claude.ai erwarten OAuth. Ein statisches
+> Bearer-Token lässt sich dort nicht eintragen. Für eine teamweite Anbindung über claude.ai müsste
+> man OAuth ergänzen, z. B. mit Google Identity oder einem Identity-Aware-Proxy davor.
+
+## Projektstruktur
+
+```
+src/otto_affiliate_mcp/
+  config.py     Konfiguration aus Umgebungsvariablen
+  client.py     Client für die easy.AFFILIATE Publisher-API (URL, Filter, CSV/JSON-Parsing, Cache)
+  analytics.py  Spaltenerkennung, Zahlen-/Datumsparsing (deutsches Format), Aggregation
+  server.py     MCP-Tools, Bearer-Auth, HTTP-App für Cloud Run
+deploy/deploy.sh  Setup und Deployment auf Google Cloud
+cloudbuild.yaml   Build/Deploy über Cloud Build
+Dockerfile
+tests/            Unit- und Integrationstests (Upstream gemockt)
+```

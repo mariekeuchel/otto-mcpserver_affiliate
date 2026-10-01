@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "otto-affiliate-mcp"
+version = "1.0.0"
+description = "MCP-Server für Umsatz- und Provisionsdaten aus dem OTTO-Partnerprogramm (easy.AFFILIATE Publisher-API)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.2,<3",
+    "httpx>=0.27",
+    "uvicorn>=0.30",
+    "starlette>=0.40",
+    "pydantic>=2.7",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[project.scripts]
+otto-affiliate-mcp = "otto_affiliate_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/otto_affiliate_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]

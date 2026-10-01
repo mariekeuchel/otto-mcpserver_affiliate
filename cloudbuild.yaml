@@ -1,0 +1,38 @@
+# Build + Deploy über Cloud Build:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=europe-west3,_SERVICE=otto-affiliate-mcp
+substitutions:
+  _REGION: europe-west3
+  _SERVICE: otto-affiliate-mcp
+  _REPO: mcp
+  _SERVICE_ACCOUNT: otto-affiliate-mcp
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}", "."]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}"]
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}
+      - --region=${_REGION}
+      - --service-account=${_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com
+      - --set-secrets=OTTO_API_ACCESS_TOKEN=otto-api-access-token:latest,OTTO_PUBLISHER_ID=otto-publisher-id:latest,MCP_AUTH_TOKEN=mcp-auth-token:latest
+      - --cpu=1
+      - --memory=512Mi
+      - --min-instances=0
+      - --max-instances=3
+      - --timeout=300
+      - --allow-unauthenticated
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}

@@ -1,0 +1,5 @@
+ordertoken;timestamp;processingstate;turnover;commission;admedia_id;subid
+A-1001;2026-09-02 10:15:00;confirmed;199,99;14,00;501;artikel-sofa
+A-1002;2026-09-02 18:40:12;open;1.249,00;87,43;501;artikel-sofa
+A-1003;2026-09-15 09:01:44;canceled;59,90;4,19;777;newsletter
+A-1004;2026-09-28 21:30:00;paid;349,50;24,47;777;newsletter
