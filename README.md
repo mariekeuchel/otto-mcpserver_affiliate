@@ -19,6 +19,8 @@ Die Daten des Partnerprogramms kommen über die **Publisher-API von easy.AFFILIA
 https://partnerprogramm.otto.de/api/<ACCESS-TOKEN>/publisher/<PUBLISHER-ID>/<METHODE>.<FORMAT>
 ```
 
+- **Weiterleitung:** `partnerprogramm.otto.de/api/…` leitet per HTTP 302 auf `ottode.easyapi.de/api/…` weiter.
+  Bei einer Netzwerk-Allowlist bzw. Firewall müssen **beide** Domains freigegeben sein.
 - **Zugangsdaten:** Im Publisher-Account unter *Statistiken → API* (`/statistic-api.do`) stehen der
   Access-Token und die Publisher-ID.
 - **Formate:** `csv`, `json`, `xml`, `xls`. Der Server nutzt standardmäßig `csv`.

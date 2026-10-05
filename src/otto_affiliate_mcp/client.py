@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -40,9 +41,34 @@ class OttoApiError(ToolError):
     """Fehler beim Aufruf der OTTO-Publisher-API (wird dem Modell als Tool-Fehler angezeigt)."""
 
 
+class _RedactTokenFilter(logging.Filter):
+    """Entfernt den Access-Token aus Log-Einträgen (httpx loggt die vollständige Request-URL)."""
+
+    def __init__(self, token: str):
+        super().__init__()
+        self.token = token
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if self.token in message:
+            record.msg = message.replace(self.token, "***")
+            record.args = None
+        return True
+
+
+def _install_log_redaction(token: str | None) -> None:
+    if not token:
+        return
+    for name in ("httpx", "httpcore"):
+        log = logging.getLogger(name)
+        if not any(isinstance(f, _RedactTokenFilter) and f.token == token for f in log.filters):
+            log.addFilter(_RedactTokenFilter(token))
+
+
 class OttoAffiliateClient:
     def __init__(self, settings: Settings, http_client: httpx.AsyncClient | None = None):
         self._settings = settings
+        _install_log_redaction(settings.access_token)
         self._http = http_client or httpx.AsyncClient(
             timeout=settings.timeout_seconds,
             follow_redirects=True,

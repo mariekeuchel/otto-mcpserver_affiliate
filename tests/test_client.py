@@ -87,3 +87,16 @@ async def test_fetch_requires_credentials():
     with pytest.raises(OttoApiError, match="OTTO_API_ACCESS_TOKEN"):
         await client.fetch("get-statistic_daily")
     await client.aclose()
+
+
+@respx.mock
+async def test_httpx_log_does_not_contain_token(caplog, fixture_csv):
+    import logging
+
+    respx.get(URL).mock(return_value=httpx.Response(200, text=fixture_csv))
+    client = OttoAffiliateClient(SETTINGS)
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        await client.fetch("get-statistic_transactions", use_cache=False)
+    assert caplog.records, "httpx sollte den Request loggen"
+    assert all("SECRET" not in r.getMessage() for r in caplog.records)
+    await client.aclose()
