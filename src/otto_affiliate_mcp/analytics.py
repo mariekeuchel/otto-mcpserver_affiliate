@@ -12,29 +12,42 @@ from typing import Any
 Row = dict[str, Any]
 
 # Mögliche Spaltennamen (klein geschrieben, ohne Sonderzeichen) je Kennzahl.
-# Die Publisher-API liefert je nach Format/Sprache deutsche oder englische Spalten.
+# Der jeweils erste Eintrag entspricht den Spalten, die die OTTO-Publisher-API tatsächlich liefert
+# (get-statistic_transactions, Stand 10/2026): criterion, trackingtime, event, status, provision,
+# turnover, attributed_turnover, admedia_id, subid, referrer, payoutdate, ...
+# Weitere Namen dienen als Fallback für andere Formate/Sprachen.
 FIELD_CANDIDATES: dict[str, list[str]] = {
     "turnover": [
         "turnover", "umsatz", "warenkorbwert", "orderturnover", "ordervalue", "basketvalue",
         "originalturnover", "salesvolume", "sale", "amount", "netturnover", "nettoumsatz",
     ],
     "commission": [
-        "commission", "provision", "publishercommission", "publisherprovision", "verguetung",
+        "provision", "commission", "publishercommission", "publisherprovision", "verguetung",
         "earnings", "payout", "revenue",
     ],
     "status": [
-        "processingstate", "status", "paymentstatus", "state", "transactionstatus",
+        "status", "processingstate", "paymentstatus", "state", "transactionstatus",
         "bearbeitungsstatus", "zahlungsstatus",
     ],
     "date": [
-        "timestamp", "date", "datum", "createdat", "created", "trackingtime", "orderdate",
+        "trackingtime", "timestamp", "date", "datum", "createdat", "created", "orderdate",
         "transactiondate", "erstelltam", "zeitpunkt", "time", "day", "tag",
     ],
-    "order_id": ["ordertoken", "orderid", "ordernumber", "bestellnummer", "transactionid", "id"],
+    "order_id": ["criterion", "ordertoken", "orderid", "ordernumber", "bestellnummer", "transactionid", "id"],
     "admedia": ["admediaid", "admedia", "werbemittelid", "werbemittel", "admedianame"],
+    # Provisionsrelevanter (zugeordneter) Anteil am Warenkorb – entspricht dem "Umsatz" der Tagesstatistik
+    "attributed_turnover": ["attributedturnover", "attributed_turnover"],
+    "event": ["event", "eventtype", "trackingtype"],  # sale | lead
+    "payout_date": ["payoutdate", "auszahlungsdatum"],
+    "referrer": ["referrer", "referer"],
+    "subid": ["subid", "sub_id"],
 }
 
 STATUS_ALIASES: dict[str, str] = {
+    # Numerische Codes der OTTO-API, verifiziert gegen get-statistic_daily (10/2026):
+    # 0 = offen, 1 = bestätigt, 2 = storniert, 3 = ausgezahlt (hat payoutdate + salary_id;
+    # die Tagesstatistik zählt 1 und 3 gemeinsam als "confirmed").
+    "0": "open", "1": "confirmed", "2": "canceled", "3": "paid",
     "open": "open", "offen": "open", "pending": "open",
     "confirmed": "confirmed", "bestaetigt": "confirmed", "bestätigt": "confirmed",
     "approved": "confirmed", "freigegeben": "confirmed",
@@ -134,14 +147,37 @@ def normalize_status(value: Any) -> str:
     return STATUS_ALIASES.get(text, text)
 
 
+def row_status(row: Row, fields: Mapping[str, str | None]) -> str:
+    """Status einer Transaktion; bestätigte Transaktionen mit Auszahlungsdatum gelten als ausgezahlt."""
+    status = normalize_status(row.get(fields["status"])) if fields["status"] else "unknown"
+    if status == "confirmed" and fields.get("payout_date"):
+        payout = str(row.get(fields["payout_date"]) or "").strip()
+        if payout not in ("", "0", "-1", "0000-00-00", "0000-00-00 00:00:00"):
+            return "paid"
+    return status
+
+
+def _normalize_url(value: Any) -> str:
+    text = str(value or "").strip()
+    return re.split(r"[?#]", text, maxsplit=1)[0] if text else ""
+
+
+# Gruppierungen, die eine Spalte direkt verwenden (Ergebnis wird nach Provision sortiert)
+COLUMN_GROUPINGS = ("admedia", "event", "referrer", "subid")
+TIME_GROUPINGS = ("day", "week", "month", "year")
+
+
 def _group_key(row: Row, fields: Mapping[str, str | None], group_by: str) -> str:
     if group_by == "none":
         return "total"
     if group_by == "status":
-        return normalize_status(row.get(fields["status"])) if fields["status"] else "unknown"
-    if group_by == "admedia":
-        col = fields["admedia"]
-        return str(row.get(col) or "unknown") if col else "unknown"
+        return row_status(row, fields)
+    if group_by in COLUMN_GROUPINGS:
+        col = fields.get(group_by)
+        value = row.get(col) if col else None
+        if group_by == "referrer":
+            value = _normalize_url(value)
+        return str(value).strip() if value not in (None, "") else "unknown"
     d = parse_date(row.get(fields["date"])) if fields["date"] else None
     if d is None:
         return "unknown"
@@ -166,42 +202,81 @@ def summarize(
     rows: list[Row],
     group_by: str = "status",
     overrides: Mapping[str, list[str]] | None = None,
+    top: int | None = None,
 ) -> dict[str, Any]:
-    """Aggregiert Umsatz, Provision und Anzahl Transaktionen, gesamt und je Gruppe."""
+    """Aggregiert Umsatz, Provision und Anzahl Transaktionen, gesamt und je Gruppe.
+
+    - turnover: kompletter Warenkorbwert der Bestellungen
+    - attributed_turnover: provisionsrelevanter Anteil (entspricht dem Umsatz der Tagesstatistik)
+    - commission: Provision des Publishers
+    Bei Gruppierung nach Spalten (admedia, event, referrer, subid) werden die Gruppen nach Provision
+    absteigend sortiert und optional auf ``top`` begrenzt.
+    """
     fields = detect_fields(rows, overrides)
 
     def empty() -> dict[str, Any]:
-        return {"transactions": 0, "turnover": Decimal(0), "commission": Decimal(0), "by_status": defaultdict(lambda: Decimal(0))}
+        return {
+            "transactions": 0,
+            "turnover": Decimal(0),
+            "attributed_turnover": Decimal(0),
+            "commission": Decimal(0),
+            "by_status": defaultdict(lambda: Decimal(0)),
+            "count_by_status": defaultdict(int),
+            "by_event": defaultdict(lambda: Decimal(0)),
+        }
+
+    def num(row: Row, kind: str) -> Decimal:
+        col = fields.get(kind)
+        return (parse_number(row.get(col)) if col else None) or Decimal(0)
 
     groups: dict[str, dict[str, Any]] = defaultdict(empty)
     total = empty()
     for row in rows:
-        turnover = parse_number(row.get(fields["turnover"])) if fields["turnover"] else None
-        commission = parse_number(row.get(fields["commission"])) if fields["commission"] else None
-        status = normalize_status(row.get(fields["status"])) if fields["status"] else "unknown"
+        turnover = num(row, "turnover")
+        attributed = num(row, "attributed_turnover")
+        commission = num(row, "commission")
+        status = row_status(row, fields)
+        event = str(row.get(fields["event"]) or "unknown") if fields.get("event") else "unknown"
         key = _group_key(row, fields, group_by)
         for bucket in (groups[key], total):
             bucket["transactions"] += 1
-            bucket["turnover"] += turnover or 0
-            bucket["commission"] += commission or 0
-            bucket["by_status"][status] += commission or 0
+            bucket["turnover"] += turnover
+            bucket["attributed_turnover"] += attributed
+            bucket["commission"] += commission
+            bucket["by_status"][status] += commission
+            bucket["count_by_status"][status] += 1
+            bucket["by_event"][event] += commission
 
-    def render(bucket: dict[str, Any]) -> dict[str, Any]:
-        out = {
+    def render(bucket: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "transactions": bucket["transactions"],
             "turnover": _money(bucket["turnover"]),
             "commission": _money(bucket["commission"]),
         }
-        if group_by != "status":
+        if fields.get("attributed_turnover"):
+            out["attributed_turnover"] = _money(bucket["attributed_turnover"])
+        if full or group_by != "status":
             out["commission_by_status"] = {k: _money(v) for k, v in sorted(bucket["by_status"].items())}
+        if full:
+            out["transactions_by_status"] = dict(sorted(bucket["count_by_status"].items()))
+            if fields.get("event"):
+                out["commission_by_event"] = {k: _money(v) for k, v in sorted(bucket["by_event"].items())}
         return out
 
-    total_out = render(total)
-    total_out["commission_by_status"] = {k: _money(v) for k, v in sorted(total["by_status"].items())}
-    # "Sicherer" Umsatz = bestätigt + ausgezahlt; offen = noch nicht final
+    total_out = render(total, full=True)
+    # "Sichere" Provision = bestätigt + ausgezahlt; offen = kann noch storniert werden
     secured = sum((v for k, v in total["by_status"].items() if k in ("confirmed", "paid")), Decimal(0))
     total_out["commission_secured"] = _money(secured)
     total_out["commission_open"] = _money(total["by_status"].get("open", Decimal(0)))
+    total_out["commission_canceled"] = _money(total["by_status"].get("canceled", Decimal(0)))
+
+    if group_by in COLUMN_GROUPINGS:
+        ordered = sorted(groups.items(), key=lambda kv: (-kv[1]["commission"], kv[0]))
+    else:
+        ordered = sorted(groups.items())
+    groups_total = len(ordered)
+    if top is not None and top > 0:
+        ordered = ordered[:top]
 
     warnings = []
     if rows and not fields["turnover"]:
@@ -210,13 +285,16 @@ def summarize(
         warnings.append("Keine Provisions-Spalte erkannt – per OTTO_FIELD_COMMISSION konfigurieren.")
     if rows and not fields["status"]:
         warnings.append("Keine Status-Spalte erkannt – per OTTO_FIELD_STATUS konfigurieren.")
-    if rows and group_by in ("day", "week", "month", "year") and not fields["date"]:
+    if rows and group_by in TIME_GROUPINGS and not fields["date"]:
         warnings.append("Keine Datums-Spalte erkannt – per OTTO_FIELD_DATE konfigurieren.")
+    if rows and group_by in COLUMN_GROUPINGS and not fields.get(group_by):
+        warnings.append(f"Keine Spalte für Gruppierung '{group_by}' erkannt.")
 
     return {
         "group_by": group_by,
         "total": total_out,
-        "groups": {k: render(v) for k, v in sorted(groups.items())},
+        "groups_total": groups_total,
+        "groups": {k: render(v) for k, v in ordered},
         "detected_fields": fields,
         "warnings": warnings,
     }

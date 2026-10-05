@@ -127,7 +127,7 @@ class OttoAffiliateClient:
 
         if use_cache and self._settings.cache_ttl_seconds > 0:
             self._cache[cache_key] = (now, rows)
-            if len(self._cache) > 256:
+            if len(self._cache) > 16:  # Antworten können mehrere MB groß sein
                 oldest = min(self._cache, key=lambda k: self._cache[k][0])
                 self._cache.pop(oldest, None)
         return rows

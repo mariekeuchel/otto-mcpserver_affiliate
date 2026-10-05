@@ -75,7 +75,7 @@ gcloud run deploy "$SERVICE" \
   --region="$REGION" \
   --service-account="$SA_EMAIL" \
   --set-secrets=OTTO_API_ACCESS_TOKEN=otto-api-access-token:latest,OTTO_PUBLISHER_ID=otto-publisher-id:latest,MCP_AUTH_TOKEN=mcp-auth-token:latest \
-  --cpu=1 --memory=512Mi --min-instances=0 --max-instances=3 --timeout=300 \
+  --cpu=1 --memory=1Gi --min-instances=0 --max-instances=3 --timeout=300 \
   "$AUTH_FLAG"
 
 URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')"

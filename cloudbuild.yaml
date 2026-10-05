@@ -28,7 +28,7 @@ steps:
       - --service-account=${_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com
       - --set-secrets=OTTO_API_ACCESS_TOKEN=otto-api-access-token:latest,OTTO_PUBLISHER_ID=otto-publisher-id:latest,MCP_AUTH_TOKEN=mcp-auth-token:latest
       - --cpu=1
-      - --memory=512Mi
+      - --memory=1Gi
       - --min-instances=0
       - --max-instances=3
       - --timeout=300

@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .analytics import VALID_STATUSES, detect_fields, summarize
+from .analytics import VALID_STATUSES, detect_fields, row_status, summarize
 from .client import OttoAffiliateClient, OttoApiError
 from .config import Settings
 
@@ -22,7 +22,7 @@ logger = logging.getLogger("otto_affiliate_mcp")
 DATE_TYPES = {"created": 0, "processed": 1, "paid": 2}
 DateType = Literal["created", "processed", "paid"]
 Status = Literal["open", "confirmed", "paid", "canceled"]
-GroupBy = Literal["status", "day", "week", "month", "year", "admedia", "none"]
+GroupBy = Literal["status", "day", "week", "month", "year", "admedia", "event", "referrer", "subid", "none"]
 DynamicDate = Literal["today", "yesterday", "currentweek", "lastweek", "currentmonth", "lastmonth", "currentyear"]
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True)
@@ -63,8 +63,9 @@ def resolve_period(date_from: str | None, date_to: str | None, today: date | Non
         end = max(today, start)
     if start > end:  # type: ignore[operator]
         raise OttoApiError("date_from liegt nach date_to.")
-    if (end - start) > timedelta(days=731):  # type: ignore[operator]
-        raise OttoApiError("Zeitraum ist zu groß (maximal 2 Jahre pro Abfrage).")
+    # Ein Monat umfasst bei OTTO schnell ~20.000 Transaktionen (~4 MB CSV) – daher max. 1 Jahr pro Abfrage.
+    if (end - start) > timedelta(days=366):  # type: ignore[operator]
+        raise OttoApiError("Zeitraum ist zu groß (maximal 1 Jahr pro Abfrage).")
     return start, end  # type: ignore[return-value]
 
 
@@ -88,6 +89,17 @@ def transaction_conditions(
             raise OttoApiError(f"Ungültiger Status: {invalid}. Erlaubt: {list(VALID_STATUSES)}")
         conditions["l:processingstate"] = statuses
     return conditions
+
+
+def filter_status(rows: list[dict[str, Any]], statuses: list[str] | None, settings: Settings) -> list[dict[str, Any]]:
+    """Filtert zusätzlich lokal nach Status (die API liefert numerische Statuscodes)."""
+    if not statuses:
+        return rows
+    fields = detect_fields(rows, settings.field_overrides)
+    if not fields["status"]:
+        return rows
+    wanted = set(statuses)
+    return [r for r in rows if row_status(r, fields) in wanted]
 
 
 def filter_admedia(rows: list[dict[str, Any]], admedia_id: str | None, settings: Settings) -> list[dict[str, Any]]:
@@ -121,22 +133,34 @@ def build_server(settings: Settings, client: OttoAffiliateClient | None = None) 
     async def get_revenue_summary(
         date_from: Annotated[str | None, Field(description="Startdatum YYYY-MM-DD (Standard: Monatsanfang)")] = None,
         date_to: Annotated[str | None, Field(description="Enddatum YYYY-MM-DD (Standard: heute)")] = None,
-        group_by: Annotated[GroupBy, Field(description="Gruppierung der Ergebnisse")] = "status",
+        group_by: Annotated[
+            GroupBy,
+            Field(
+                description="Gruppierung: status, day, week, month, year, admedia (Werbemittel), event (sale/lead), "
+                "referrer (verlinkende Website), subid (Artikel-/Link-Kennung) oder none"
+            ),
+        ] = "status",
         date_type: Annotated[
             DateType, Field(description="Bezugsdatum: created=Bestelldatum, processed=Bearbeitung, paid=Auszahlung")
         ] = "created",
         status: Annotated[list[Status] | None, Field(description="Nur diese Status berücksichtigen")] = None,
         admedia_id: Annotated[str | None, Field(description="Nur Transaktionen dieses Werbemittels")] = None,
+        top: Annotated[
+            int, Field(ge=1, le=500, description="Bei admedia/event/referrer/subid: nur die Top-N Gruppen nach Provision")
+        ] = 50,
     ) -> dict[str, Any]:
         """Umsatz, Provision und Anzahl der Transaktionen für einen Zeitraum – gesamt und gruppiert
-        (nach Status, Tag, Woche, Monat, Jahr oder Werbemittel). Enthält gesicherte (confirmed+paid)
-        und offene Provision."""
+        (nach Status, Zeit, Werbemittel, Sale/Lead, verlinkender Website (referrer) oder SubID – die SubID
+        enthält die Artikel-/Link-Kennung und ist für Auswertungen pro Artikel die richtige Wahl).
+        turnover = gesamter Warenkorbwert, attributed_turnover = provisionsrelevanter Umsatz,
+        commission = Provision. Enthält gesicherte (confirmed+paid), offene und stornierte Provision."""
         start, end = resolve_period(date_from, date_to)
         rows = await get_client().fetch(
             "get-statistic_transactions", transaction_conditions(start, end, date_type, status)
         )
         rows = filter_admedia(rows, admedia_id, settings)
-        result = summarize(rows, group_by=group_by, overrides=settings.field_overrides)
+        rows = filter_status(rows, status, settings)
+        result = summarize(rows, group_by=group_by, overrides=settings.field_overrides, top=top)
         result["period"] = {"from": start.isoformat(), "to": end.isoformat(), "date_type": date_type}
         result["currency"] = "EUR"
         return result
@@ -153,21 +177,24 @@ def build_server(settings: Settings, client: OttoAffiliateClient | None = None) 
         limit: Annotated[int, Field(ge=1, le=1000, description="Max. Anzahl zurückgegebener Zeilen")] = 100,
         offset: Annotated[int, Field(ge=0, description="Zeilen überspringen (Paginierung)")] = 0,
     ) -> dict[str, Any]:
-        """Einzelne Transaktionen (Bestellungen) aus dem OTTO-Partnerprogramm mit Bestellnummer,
-        Zeitpunkt, Status, Warenkorbwert (Umsatz), Provision, Werbemittel und SubID."""
+        """Einzelne Transaktionen aus dem OTTO-Partnerprogramm: criterion (Transaktions-ID), trackingtime,
+        event (sale/lead), status (0=offen, 1=bestätigt, 2=storniert, 3=ausgezahlt; zusätzlich status_label), provision,
+        turnover (Warenkorbwert), attributed_turnover, referrer (verlinkende Seite), subid, admedia_id."""
         start, end = resolve_period(date_from, date_to)
         rows = await get_client().fetch(
             "get-statistic_transactions", transaction_conditions(start, end, date_type, status)
         )
         rows = filter_admedia(rows, admedia_id, settings)
-        page = rows[offset : offset + limit]
+        rows = filter_status(rows, status, settings)
+        fields = detect_fields(rows, settings.field_overrides)
+        page = [{**r, "status_label": row_status(r, fields)} for r in rows[offset : offset + limit]]
         return {
             "period": {"from": start.isoformat(), "to": end.isoformat(), "date_type": date_type},
             "total_rows": len(rows),
             "returned": len(page),
             "offset": offset,
             "has_more": offset + len(page) < len(rows),
-            "detected_fields": detect_fields(rows, settings.field_overrides),
+            "detected_fields": fields,
             "transactions": page,
         }
 

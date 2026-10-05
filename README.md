@@ -40,12 +40,27 @@ Quellen: [easy.MARKETING Support – Transaktions-API](https://support.easy-m.de
 [Publisher-API](https://support.easy-m.de/support/solutions/articles/48001173685-publisher-api),
 [OTTO Partnerprogramm](https://www.otto.de/partnerprogramm/en/).
 
-> **Wichtig vor dem ersten Einsatz:** URL-Schema und Filter stammen aus der Doku von easy.marketing.
-> Die genauen **Spaltennamen** der Antworten konnten wir ohne echten Zugang nicht prüfen.
-> Der Server erkennt die Spalten automatisch und kennt dafür deutsche und englische Varianten
-> (z. B. `turnover`/`Umsatz`, `commission`/`Provision`, `processingstate`/`Status`).
-> Bitte nach dem Deployment einmal `get_transactions` aufrufen und `detected_fields` prüfen.
-> Wird eine Spalte nicht erkannt, kann man sie über `OTTO_FIELD_*` festlegen (siehe `.env.example`).
+### Geprüftes Datenformat (Live-Test 10/2026)
+
+`get-statistic_transactions` liefert CSV mit `;` als Trennzeichen. Wichtige Spalten:
+
+| Spalte | Bedeutung |
+|---|---|
+| `criterion` | Transaktions-ID |
+| `trackingtime` | Zeitpunkt der Transaktion (z. B. `2026-09-30 23:58:38+02`) |
+| `event` | `sale` (Otto-Sale) oder `lead` (Neukundenvergütung) |
+| `status` | `0` = offen, `1` = bestätigt, `2` = storniert, `3` = ausgezahlt |
+| `provision` | Provision des Publishers |
+| `turnover` | gesamter Warenkorbwert |
+| `attributed_turnover` | provisionsrelevanter Umsatz. Diesen Wert zeigt die Tagesstatistik als „Umsatz“. |
+| `subid` | Kennung aus dem Link, z. B. Artikel oder Platzierung (`exp_1193105_einhellotto_otto`) |
+| `referrer` | verlinkende Website (nur die Domain) |
+| `admedia_id`, `payoutdate`, `processingdate`, `reason_of_cancellation`, … | weitere Details |
+
+Die Statuscodes und Summen des Servers wurden gegen `get-statistic_daily` geprüft und stimmen exakt
+überein. Ein Monat umfasst etwa 19.000 Transaktionen (rund 4 MB). Darum ist eine Abfrage auf maximal
+ein Jahr begrenzt, und Cloud Run läuft mit 1 GiB Speicher. Erkennt der Server eine Spalte nicht, lässt
+sie sich über `OTTO_FIELD_*` festlegen (siehe `.env.example`).
 
 ## Tools des MCP-Servers
 
@@ -53,7 +68,7 @@ Alle Tools lesen nur. Datumsangaben im Format `YYYY-MM-DD`; ohne Angabe gilt der
 
 | Tool | Beschreibung |
 |---|---|
-| `get_revenue_summary` | Umsatz, Provision und Anzahl Transaktionen, gesamt und gruppiert nach `status`, `day`, `week`, `month`, `year` oder `admedia`. Zeigt auch die **gesicherte** Provision (confirmed + paid) und die **offene** Provision. |
+| `get_revenue_summary` | Umsatz, Provision und Anzahl Transaktionen, gesamt und gruppiert nach `status`, `day`, `week`, `month`, `year`, `admedia`, `event` (Sale/Lead), `subid` (Artikel/Link) oder `referrer` (Website). Zeigt auch die **gesicherte** Provision (confirmed + paid) und die **offene** Provision. |
 | `get_transactions` | Einzelne Transaktionen mit Paginierung (`limit`/`offset`). Filter: Status, Werbemittel, Bezugsdatum. |
 | `get_daily_statistics` | Tagesstatistik (Views, Klicks, Sales). Optional ein relativer Zeitraum wie `lastmonth`. |
 | `get_advertiser_statistics` | Statistik je Advertiser/Programm |
@@ -64,6 +79,7 @@ Beispielfragen an Claude:
 - „Wie viel Provision haben wir im September mit OTTO verdient, und wie viel davon ist schon bestätigt?“
 - „Zeig mir den OTTO-Umsatz der letzten 6 Monate pro Monat.“
 - „Welche Bestellungen sind diese Woche storniert worden?“
+- „Welche SubIDs bzw. Artikel haben im September die meiste Provision gebracht?“
 
 ## Lokal starten
 

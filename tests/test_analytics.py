@@ -66,3 +66,38 @@ def test_summarize_empty():
     result = summarize([], group_by="status")
     assert result["total"]["transactions"] == 0
     assert result["groups"] == {}
+
+
+def test_summarize_real_otto_format():
+    from pathlib import Path
+
+    rows = parse_csv((Path(__file__).parent / "fixtures" / "transactions_otto.csv").read_text())
+    fields = detect_fields(rows)
+    assert fields["order_id"] == "criterion"
+    assert fields["date"] == "trackingtime"
+    assert fields["commission"] == "provision"
+    assert fields["status"] == "status"
+    assert fields["attributed_turnover"] == "attributed_turnover"
+
+    result = summarize(rows, group_by="status")
+    total = result["total"]
+    assert total["transactions_by_status"] == {"canceled": 1, "confirmed": 1, "open": 3}
+    assert total["commission"] == 9.74
+    assert total["commission_open"] == 5.24
+    assert total["commission_canceled"] == 1.5
+    assert total["commission_secured"] == 3.0
+    assert total["attributed_turnover"] == 121.6
+    assert total["commission_by_event"] == {"lead": 5.0, "sale": 4.74}
+
+    by_ref = summarize(rows, group_by="referrer", top=1)
+    assert by_ref["groups_total"] == 2
+    assert list(by_ref["groups"]) == ["https://www.example.de/artikel-b"]  # höchste Provision zuerst
+
+    assert summarize(rows, group_by="day")["groups"]["2026-09-30"]["transactions"] == 2
+
+
+def test_numeric_status_codes():
+    assert normalize_status("0") == "open"
+    assert normalize_status("1") == "confirmed"
+    assert normalize_status("2") == "canceled"
+    assert normalize_status("3") == "paid"

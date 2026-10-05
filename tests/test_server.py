@@ -38,7 +38,7 @@ async def test_revenue_summary_tool(fixture_csv):
             {"date_from": "2026-09-01", "date_to": "2026-09-30", "group_by": "admedia", "status": ["confirmed", "paid"]},
         )
     data = _payload(result)
-    assert data["total"]["commission"] == 130.09
+    assert data["total"]["commission"] == 38.47  # nur confirmed + paid (lokal gefiltert)
     assert set(data["groups"]) == {"501", "777"}
     params = route.calls[0].request.url.params
     assert params["condition[period][from]"] == "01.09.2026"

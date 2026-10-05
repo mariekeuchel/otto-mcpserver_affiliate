@@ -47,7 +47,10 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         overrides: dict[str, list[str]] = {}
-        for key in ("turnover", "commission", "status", "date", "order_id", "admedia"):
+        for key in (
+            "turnover", "attributed_turnover", "commission", "status", "date", "order_id",
+            "admedia", "event", "payout_date", "referrer", "subid",
+        ):
             values = _env_list(f"OTTO_FIELD_{key.upper()}")
             if values:
                 overrides[key] = values
