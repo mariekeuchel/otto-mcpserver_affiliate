@@ -279,7 +279,7 @@ def build_server(settings: Settings, client: OttoAffiliateClient | None = None) 
 class BearerAuthMiddleware:
     """Schützt den MCP-Endpunkt mit statischen Bearer-Tokens (MCP_AUTH_TOKEN)."""
 
-    def __init__(self, app: Any, tokens: list[str], open_paths: tuple[str, ...] = ("/healthz",)):
+    def __init__(self, app: Any, tokens: list[str], open_paths: tuple[str, ...] = ("/health",)):
         self.app = app
         self.tokens = [t.encode() for t in tokens]
         self.open_paths = open_paths
@@ -314,8 +314,8 @@ def build_http_app(settings: Settings) -> Any:
 
     mcp = build_server(settings)
 
-    @mcp.custom_route("/healthz", methods=["GET"])
-    async def healthz(_: Request) -> JSONResponse:
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(_: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "configured": settings.is_configured})
 
     app = mcp.streamable_http_app(

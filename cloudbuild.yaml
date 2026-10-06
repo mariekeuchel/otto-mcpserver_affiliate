@@ -4,7 +4,7 @@
 substitutions:
   _REGION: europe-west3
   _SERVICE: otto-affiliate-mcp
-  _REPO: mcp
+  _REPO: services
   _SERVICE_ACCOUNT: otto-affiliate-mcp
 
 steps:
@@ -26,7 +26,7 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_SERVICE}:${BUILD_ID}
       - --region=${_REGION}
       - --service-account=${_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com
-      - --set-secrets=OTTO_API_ACCESS_TOKEN=otto-api-access-token:latest,OTTO_PUBLISHER_ID=otto-publisher-id:latest,MCP_AUTH_TOKEN=mcp-auth-token:latest
+      - --set-secrets=OTTO_API_ACCESS_TOKEN=otto_api_access_token:latest,OTTO_PUBLISHER_ID=otto_publisher_id:latest,MCP_AUTH_TOKEN=otto-affiliate-mcp-auth-token:latest
       - --cpu=1
       - --memory=1Gi
       - --min-instances=0

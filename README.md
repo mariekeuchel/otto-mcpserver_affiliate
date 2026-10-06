@@ -100,20 +100,43 @@ pytest   # Tests
 
 ## Deployment auf Google Cloud Run
 
-Das Skript übernimmt alles: APIs aktivieren, Artifact Registry, Service Account, Secrets im
-Secret Manager, Build über Cloud Build und Deploy nach Cloud Run (Region `europe-west3`, Frankfurt).
+Das Skript übernimmt alles: APIs aktivieren, Artifact Registry (`services`), eigener Service Account,
+Secret-Zugriff, Build über Cloud Build und Deploy nach Cloud Run (Region `europe-west3`, Frankfurt).
+Standardprojekt ist `dmx-data-248209`.
 
 ```bash
-PROJECT_ID=mein-gcp-projekt ./deploy/deploy.sh
+./deploy/deploy.sh
+# oder: PROJECT_ID=anderes-projekt ./deploy/deploy.sh
 ```
 
-Beim ersten Lauf fragt das Skript nach dem OTTO-Access-Token und der Publisher-ID. Das
-`MCP_AUTH_TOKEN` erzeugt es selbst und gibt es einmal aus. Spätere Deployments (z. B. aus CI)
-gehen auch so:
+**Secrets im Secret Manager:**
+
+| Secret | Umgebungsvariable | Herkunft |
+|---|---|---|
+| `otto_api_access_token` | `OTTO_API_ACCESS_TOKEN` | muss vorher angelegt sein |
+| `otto_publisher_id` | `OTTO_PUBLISHER_ID` | muss vorher angelegt sein |
+| `otto-affiliate-mcp-auth-token` | `MCP_AUTH_TOKEN` | legt das Skript beim ersten Lauf an und gibt den Wert einmal aus |
+
+Fehlt eines der beiden OTTO-Secrets, bricht das Skript ab. Einen eigenen MCP-Token setzt man mit
+`MCP_AUTH_TOKEN=… ./deploy/deploy.sh` (das Skript legt dann eine neue Secret-Version an).
+Den aktuellen MCP-Token für die Client-Konfiguration liest man so aus:
+
+```bash
+gcloud secrets versions access latest --secret=otto-affiliate-mcp-auth-token
+```
+
+**Service Account:** Der Dienst läuft als `otto-affiliate-mcp@<PROJECT_ID>.iam.gserviceaccount.com`.
+Der Account hat keine Projekt-Rollen, nur `roles/secretmanager.secretAccessor` auf genau diese drei
+Secrets. Logs nach stdout schreibt Cloud Run ohne zusätzliche Rolle.
+
+Spätere Deployments (z. B. aus CI) gehen auch so:
 
 ```bash
 gcloud builds submit --config cloudbuild.yaml
 ```
+
+Dafür braucht der Cloud-Build-Service-Account `roles/run.admin` und `roles/iam.serviceAccountUser`
+auf `otto-affiliate-mcp@…` (um den Dienst unter diesem Account zu deployen).
 
 Aufbau auf Google Cloud:
 
@@ -129,7 +152,7 @@ Claude / MCP-Client ──HTTPS + Bearer-Token──▶ Cloud Run (/mcp, statele
 - **Logging:** Der Access-Token steht in der Upstream-URL. Darum loggt der Server keine Request-URLs
   von httpx, und Fehlermeldungen werden geschwärzt.
 - **Cache:** API-Antworten werden 5 Minuten im Speicher gehalten (`OTTO_CACHE_TTL`).
-- **Health-Check:** `GET /healthz`
+- **Health-Check:** `GET /health` (nicht `/healthz`: Cloud Run reserviert Pfade, die auf `z` enden)
 
 ### Zugriffsschutz
 
